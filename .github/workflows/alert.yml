@@ -1,0 +1,23 @@
+name: crypto-hunter-alert
+
+on:
+  schedule:
+    # TR 15:00–24:00 arası (UTC 12:00–21:00) her 30 dk tarar
+    - cron: "*/30 12-21 * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - run: python hunter.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALERT_ONLY: "1"
+          SEND_IF_EMPTY: "0"
