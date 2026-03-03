@@ -1,157 +1,189 @@
 import os
-import math
+import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
-BASE = "https://fapi.binance.com"
+# ---------------------------
+# CONFIG
+# ---------------------------
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]  # istersen çoğaltırız
+TIMEFRAME_HOURS = 8  # "8 saat daha iyi" dediğin için
+MIN_ABS_FUNDING = 0.0005  # 0.05% / 8h eşik (kalite için); istersen ayarlarız
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+ALERT_ONLY = os.getenv("ALERT_ONLY", "1") == "1"        # sadece sinyal varsa mesaj
+SEND_IF_EMPTY = os.getenv("SEND_IF_EMPTY", "0") == "1"  # sinyal yoksa da mesaj at
 
-# A+ eşikler (kilit)
-FUNDING_ABS = 0.0010        # 0.10% => 0.0010
-OI_8H_PCT = 0.08            # +8%
-RATIO_ONE_SIDE = 0.70       # %70 tek taraf
-MAX_1H_MOVE = 0.012         # 1.2% üstü ise "breakout başladı" say, sinyal verme
-NEAR_24H_EDGE = 0.005       # 24h high/low'a 0.5% yakınlık (direnç/destek proxy)
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TG_CHAT = os.environ["TELEGRAM_CHAT_ID"]
+# Binance futures endpoints (GitHub runner bazılarını bloklayabiliyor)
+BASE_CANDIDATES = [
+    "https://www.binance.com",     # çoğu zaman daha iyi
+    "https://fapi.binance.com",    # klasik
+    "https://api.binance.com",     # bazı bölgelerde fallback
+]
 
-ALERT_ONLY = os.environ.get("ALERT_ONLY", "1") == "1"
-SEND_IF_EMPTY = os.environ.get("SEND_IF_EMPTY", "0") == "1"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; CryptoHunter/1.0; +https://github.com/)"
+}
 
-def tg_send(msg: str):
+TIMEOUT = 20
+
+
+# ---------------------------
+# HELPERS
+# ---------------------------
+def tg_send(text: str):
+    if not TG_TOKEN or not TG_CHAT:
+        # secrets eksikse burada düşmesin diye
+        print("Telegram secrets missing. Message:\n", text)
+        return
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    r = requests.post(url, json={
-        "chat_id": TG_CHAT,
-        "text": msg,
-        "disable_web_page_preview": True
-    }, timeout=25)
-    r.raise_for_status()
+    payload = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
+    try:
+        requests.post(url, json=payload, timeout=TIMEOUT)
+    except Exception as e:
+        print("Telegram send error:", e)
 
-def get_json(path, params=None):
-    r = requests.get(f"{BASE}{path}", params=params, timeout=25)
-    r.raise_for_status()
-    return r.json()
 
+def get_json(path: str, params: dict | None = None):
+    """
+    Aynı endpointi 3 farklı base ile dener.
+    451/403 gibi engellerde diğer base'e geçer.
+    """
+    last_err = None
+    for base in BASE_CANDIDATES:
+        url = f"{base}{path}"
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+            # 451/403 gibi durumlarda raise ile yakalayacağız
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.HTTPError as e:
+            last_err = e
+            # 451/403/418/429 vb. durumlarda diğer base'e geç
+            try:
+                code = e.response.status_code
+            except Exception:
+                code = None
+            print(f"HTTPError {code} @ {url}")
+            continue
+        except Exception as e:
+            last_err = e
+            print(f"Error @ {url}: {e}")
+            continue
+
+    raise last_err if last_err else RuntimeError("All endpoints failed")
+
+
+def fmt_pct(x: float) -> str:
+    return f"{x*100:.3f}%"
+
+
+def now_tr():
+    # TR saatine yakın göstermek için (UTC+3 sabit)
+    return datetime.now(timezone.utc).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+# ---------------------------
+# SIGNAL LOGIC (A+ basit ama disiplinli)
+# ---------------------------
 def funding_rate(symbol: str) -> float:
-    # premiumIndex: lastFundingRate alanı var (string)
+    # premiumIndex: {"lastFundingRate": "...", "nextFundingTime": ...}
     j = get_json("/fapi/v1/premiumIndex", {"symbol": symbol})
-    return float(j.get("lastFundingRate", 0.0))
+    return float(j["lastFundingRate"])
 
-def mark_price(symbol: str) -> float:
-    j = get_json("/fapi/v1/premiumIndex", {"symbol": symbol})
-    return float(j.get("markPrice", 0.0))
 
-def oi_change_8h(symbol: str) -> float | None:
-    # 1h OI history’den 9 data al (şimdi ve 8 saat önce)
-    j = get_json("/futures/data/openInterestHist", {"symbol": symbol, "period": "1h", "limit": 9})
-    if not isinstance(j, list) or len(j) < 9:
-        return None
-    now_oi = float(j[-1]["sumOpenInterest"])
-    old_oi = float(j[0]["sumOpenInterest"])
-    if old_oi <= 0:
-        return None
-    return (now_oi - old_oi) / old_oi
+def choose_direction(fr: float) -> str:
+    """
+    Funding pozitif ve yüksekse: piyasada long kalabalık -> SHORT bias
+    Funding negatif ve yüksekse: short kalabalık -> LONG bias
+    """
+    if fr > 0:
+        return "SHORT"
+    if fr < 0:
+        return "LONG"
+    return "FLAT"
 
-def long_short_ratio(symbol: str) -> float | None:
-    # Global long/short account ratio (1h)
-    j = get_json("/futures/data/globalLongShortAccountRatio", {"symbol": symbol, "period": "1h", "limit": 1})
-    if not isinstance(j, list) or not j:
-        return None
-    # longShortRatio >1 ise long ağırlık
-    lsr = float(j[0]["longShortRatio"])
-    # long yüzdesi = lsr / (1+lsr)
-    long_pct = lsr / (1.0 + lsr)
-    return long_pct
 
-def one_hour_move(symbol: str) -> float | None:
-    # 1h kline: close-open / open
-    j = get_json("/fapi/v1/klines", {"symbol": symbol, "interval": "1h", "limit": 2})
-    if not isinstance(j, list) or len(j) < 2:
-        return None
-    # son kapanmış mum: j[-2]
-    o = float(j[-2][1])
-    c = float(j[-2][4])
-    if o <= 0:
-        return None
-    return abs(c - o) / o
+def score_setup(fr: float) -> str:
+    """
+    Basit A+ kuralı:
+    - |funding| >= MIN_ABS_FUNDING ise aday
+    """
+    if abs(fr) >= MIN_ABS_FUNDING:
+        return "A+"
+    return "NO"
 
-def near_24h_extreme(symbol: str, price: float, side: str) -> bool:
-    # side: "short" => 24h high'a yakın, "long" => 24h low'a yakın
-    j = get_json("/fapi/v1/ticker/24hr", {"symbol": symbol})
-    hi = float(j["highPrice"])
-    lo = float(j["lowPrice"])
-    if side == "short":
-        return abs(hi - price) / max(hi, 1e-9) <= NEAR_24H_EDGE
-    else:
-        return abs(price - lo) / max(lo, 1e-9) <= NEAR_24H_EDGE
 
-def build_signal(symbol: str):
-    fr = funding_rate(symbol)
-    price = mark_price(symbol)
-    oi8 = oi_change_8h(symbol)
-    lp = long_short_ratio(symbol)
-    mv1h = one_hour_move(symbol)
+def build_message(signals: list[dict], note: str = "") -> str:
+    ts = now_tr()
+    lines = [f"🧠 Crypto Hunter Alert ({ts})"]
+    if note:
+        lines.append(note)
+    lines.append("")
 
-    if oi8 is None or lp is None or mv1h is None:
-        return None
+    if not signals:
+        lines.append("🧊 A+ yok (şartlar sağlanmadı).")
+        return "\n".join(lines)
 
-    # breakout filtresi: son 1h çok hareketliyse sinyal verme
-    if mv1h > MAX_1H_MOVE:
-        return None
+    lines.append("🚨 A+ SETUP BULUNDU")
+    lines.append("")
 
-    # Tek taraf koşulu
-    long_pct = lp
-    short_pct = 1.0 - lp
+    # solda olsun dedin: formatı soldan hizalı tutuyorum
+    for s in signals:
+        lines.append(f"• {s['symbol']}")
+        lines.append(f"  Funding: {s['funding_pct']}")
+        lines.append(f"  Zaman: {TIMEFRAME_HOURS}h")
+        lines.append(f"  Skor: {s['score']}")
+        lines.append(f"  ---")
+        lines.append("")
 
-    # SHORT A+
-    if fr >= FUNDING_ABS and oi8 >= OI_8H_PCT and long_pct >= RATIO_ONE_SIDE:
-        # direnç proxy: 24h high'a yakın
-        if not near_24h_extreme(symbol, price, "short"):
-            return None
-        direction = "🔴 SHORT"
-        return fr, oi8, long_pct, mv1h, price, direction
+    # en altta long/short yazsın dedin:
+    # birden fazla sinyal varsa ilkini yazıyoruz (istersen hepsine ayrı yazarız)
+    lines.append(f"📌 SONUÇ: {signals[0]['direction']}")
+    return "\n".join(lines)
 
-    # LONG A+
-    if fr <= -FUNDING_ABS and oi8 >= OI_8H_PCT and short_pct >= RATIO_ONE_SIDE:
-        # destek proxy: 24h low'a yakın
-        if not near_24h_extreme(symbol, price, "long"):
-            return None
-        direction = "🟢 LONG"
-        return fr, oi8, long_pct, mv1h, price, direction
-
-    return None
 
 def main():
-    hits = []
+    signals = []
+    errors = []
 
-    for s in SYMBOLS:
-        sig = build_signal(s)
-        if sig:
-            fr, oi8, long_pct, mv1h, price, direction = sig
-            hits.append((s, fr, oi8, long_pct, mv1h, price, direction))
+    for sym in SYMBOLS:
+        try:
+            fr = funding_rate(sym)
+            sc = score_setup(fr)
+            if sc == "A+":
+                direction = choose_direction(fr)
+                signals.append({
+                    "symbol": sym,
+                    "funding": fr,
+                    "funding_pct": fmt_pct(fr),
+                    "score": sc,
+                    "direction": direction
+                })
+        except Exception as e:
+            errors.append(f"{sym}: {type(e).__name__} - {e}")
 
-    if not hits:
-        if SEND_IF_EMPTY:
-            tg_send(f"🧊 A+ yok.\nSaat: {datetime.now().strftime('%H:%M')}")
+        # küçük throttle
+        time.sleep(0.3)
+
+    # Eğer hiç sinyal yoksa ve SEND_IF_EMPTY kapalıysa sessiz kal
+    if not signals and ALERT_ONLY and not SEND_IF_EMPTY and not errors:
+        print("No A+ and SEND_IF_EMPTY=0. Exiting silently.")
         return
 
-    # Mesaj
-    header = "🚨 A+ SETUP" if ALERT_ONLY else "🕵️ KRİPTO RAPORU"
-    msg = f"{header} ({datetime.now().strftime('%H:%M')})\n"
-    msg += "Filtre: |funding|≥0.10%, OI8h≥+8%, tek taraf≥70%, 1h move≤1.2%\n"
+    note = ""
+    if errors:
+        # GitHub runner Binance'ı engelliyorsa burada görürüz (451/403 vb.)
+        note = "⚠️ Veri erişim uyarısı:\n" + "\n".join(errors[:6])
+        if len(errors) > 6:
+            note += f"\n... +{len(errors)-6} hata daha"
 
-    for (s, fr, oi8, long_pct, mv1h, price, direction) in hits[:3]:
-        msg += "\n" + "—"*28 + "\n"
-        msg += f"• {s}  | Mark: {price:.2f}\n"
-        msg += f"  Funding: {fr*100:.3f}%\n"
-        msg += f"  OI (8h): {oi8*100:.1f}%\n"
-        msg += f"  Long%: {long_pct*100:.0f}% (Short%: {(1-long_pct)*100:.0f}%)\n"
-        msg += f"  1h move: {mv1h*100:.2f}%\n"
-        msg += f"\n{direction}\n"
-
+    msg = build_message(signals, note=note)
     tg_send(msg)
+    print(msg)
+
 
 if __name__ == "__main__":
     main()
