@@ -3,56 +3,62 @@ import requests
 from datetime import datetime
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TG_CHAT  = os.getenv("TELEGRAM_CHAT_ID")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
+
+URL = "https://open-api.coinglass.com/public/v2/funding"
 
 SYMBOLS = [
 "BTC","ETH","SOL","XRP","BNB",
 "DOGE","ADA","AVAX","LINK","TRX"
 ]
 
-URL = "https://open-api.coinglass.com/public/v2/funding"
 
 def send(msg):
 
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
-    requests.post(url,json={
+    requests.post(url, json={
         "chat_id": TG_CHAT,
         "text": msg
     })
 
 
-def get_funding(symbol):
+def get_all():
 
-    r = requests.get(URL)
+    try:
 
-    data = r.json()
+        r = requests.get(URL, timeout=20)
 
-    for x in data["data"]:
+        j = r.json()
 
-        if x["symbol"] == symbol:
+        if "data" not in j:
+            return []
 
-            return float(x["fundingRate"])
+        return j["data"]
 
-    return None
+    except:
+        return []
 
 
 def main():
 
+    data = get_all()
+
     alerts = []
 
-    for s in SYMBOLS:
+    for coin in SYMBOLS:
 
-        fr = get_funding(s)
+        for x in data:
 
-        if fr is None:
-            continue
+            if x.get("symbol") == coin:
 
-        if abs(fr) > 0.0005:
+                fr = float(x.get("fundingRate",0))
 
-            alerts.append(
-                f"🚨 {s} funding {(fr*100):.3f}%"
-            )
+                if abs(fr) > 0.0005:
+
+                    alerts.append(
+                        f"🚨 {coin} funding {(fr*100):.3f}%"
+                    )
 
     msg = "Funding Scan\n\n"
 
