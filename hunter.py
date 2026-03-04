@@ -7,31 +7,32 @@ HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "20"))
 TG_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 TG_CHAT  = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
-# Temkinli eşik: 0.10%  => 0.0010
-THRESH = float(os.getenv("THRESH", "0.0010"))
+# Ayarlar
+THRESH = float(os.getenv("THRESH", "0.005"))  # 0.50% (0.005 => %0.50)
+TOP_N = int(os.getenv("TOP_N", "5"))
 
-# CoinGecko derivatives endpoint (genelde GitHub Actions'ta çalışıyor)
-SOURCE_URL = "https://api.coingecko.com/api/v3/derivatives"
+# Sadece Binance + Bybit
+ONLY_EXCHANGES = {"BINANCE", "BYBIT"}
 
-# Sadece büyük borsalar
-BIG_EXCHANGES = {
-    "Binance (Futures)",
-    "Bybit (Futures)",
-    "OKX (Futures)",
-    "Bitget Futures",
-}
-
-# İstersen sadece majör coinler kalsın (temkinli yaklaşım)
-# Boş bırakırsan (""), market filtresinden geçen her şeyi tarar.
+# Sadece majör coinler
 MAJOR_ONLY = os.getenv("MAJOR_ONLY", "1") == "1"
 MAJORS = {"BTC", "ETH", "SOL", "XRP", "BNB"}
+
+# Kaynak (IP block yemiyor)
+SOURCE_URL = "https://api.coingecko.com/api/v3/derivatives"
+
+# CoinGecko market isimleri
+EXCHANGE_MARKETS = {
+    "BINANCE": {"BINANCE (FUTURES)"},
+    "BYBIT": {"BYBIT (FUTURES)"},
+}
 
 def now():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def tg_send(text: str) -> None:
     if not TG_TOKEN or not TG_CHAT:
-        raise SystemExit(f"❌ Telegram ENV missing. TOKEN? {bool(TG_TOKEN)} CHAT? {bool(TG_CHAT)}")
+        raise SystemExit("❌ Telegram ENV missing (token/chat_id).")
 
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     r = requests.post(
@@ -40,15 +41,13 @@ def tg_send(text: str) -> None:
         timeout=HTTP_TIMEOUT
     )
     if r.status_code != 200:
-        raise SystemExit(f"❌ Telegram HTTP {r.status_code}: {r.text[:300]}")
+        raise SystemExit(f"❌ Telegram HTTP {r.status_code}: {r.text[:250]}")
 
-def pick_base(symbol: str) -> str:
-    # BTCUSDT, BTC-USDT, BTC/USDT, BTC_USDT gibi formatlardan base'i çek
+def base_from_symbol(symbol: str) -> str:
     s = (symbol or "").upper()
     for sep in ["-", "_", "/"]:
         if sep in s:
             return s.split(sep)[0]
-    # BTCUSDT gibi geldiyse ilk 3-4 harf mantığı (majörler için yeterli)
     if s.startswith("BTC"): return "BTC"
     if s.startswith("ETH"): return "ETH"
     if s.startswith("SOL"): return "SOL"
@@ -56,8 +55,15 @@ def pick_base(symbol: str) -> str:
     if s.startswith("BNB"): return "BNB"
     return s[:4]
 
+def allowed_market(market: str) -> bool:
+    m = (market or "").upper()
+    allowed = set()
+    for ex in ONLY_EXCHANGES:
+        allowed |= EXCHANGE_MARKETS.get(ex, set())
+    return m in allowed
+
 def main():
-    # Başlangıç ping (geliyorsa Telegram tamam)
+    # Başlangıç ping (istersen kaldırırız)
     tg_send(f"🚀 Hunter started ({now()})")
 
     try:
@@ -71,14 +77,14 @@ def main():
             tg_send(f"⚠️ Unexpected source format\n\n{now()}")
             return
 
-        candidates = []
+        rows = []
         for x in data:
             market = x.get("market") or ""
-            if market not in BIG_EXCHANGES:
+            if not allowed_market(market):
                 continue
 
             sym = x.get("symbol") or ""
-            base = pick_base(sym)
+            base = base_from_symbol(sym)
 
             if MAJOR_ONLY and base not in MAJORS:
                 continue
@@ -91,21 +97,30 @@ def main():
             except:
                 continue
 
-            if abs(fr) >= THRESH:
-                direction = "POS" if fr > 0 else "NEG"
-                # POS: longlar shortlara öder -> short taraf funding alır
-                hint = "Short-perp + Spot-long" if fr > 0 else "Long-perp + Spot-short (zor)"
-                candidates.append((abs(fr), f"🚨 {base} | {market} | {fr*100:.3f}% ({direction}) | {hint}"))
+            # ✅ SADECE POS funding
+            if fr <= 0:
+                continue
 
-        candidates.sort(reverse=True, key=lambda t: t[0])
+            if fr >= THRESH:
+                rows.append((fr, f"✅ {base} | {market} | {fr*100:.2f}% | Short-perp + Spot-long"))
 
-        if candidates:
-            lines = ["Funding Opportunity (Big Exchanges)", f"Threshold: {THRESH*100:.2f}%\n"]
-            lines.extend([c[1] for c in candidates[:15]])
+        rows.sort(reverse=True, key=lambda t: t[0])
+
+        if rows:
+            lines = [
+                "🚨 TOP POS FUNDING (Binance+Bybit)",
+                f"Threshold: {THRESH*100:.2f}%",
+                ""
+            ]
+            lines += [x[1] for x in rows[:TOP_N]]
             lines.append(f"\n{now()}")
             tg_send("\n".join(lines))
         else:
-            tg_send(f"Funding Scan (Big Exchanges)\nScan OK ✅\nNo alerts\nThreshold: {THRESH*100:.2f}%\n\n{now()}")
+            tg_send(
+                "Funding Scan (POS only)\n"
+                "Scan OK ✅\nNo opportunities\n"
+                f"Threshold: {THRESH*100:.2f}%\n\n{now()}"
+            )
 
     except Exception as e:
         tg_send(f"⚠️ Exception: {repr(e)}\n\n{now()}")
