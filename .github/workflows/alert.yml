@@ -2,14 +2,12 @@ name: crypto-hunter-alert
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "*/15 * * * *"
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     timeout-minutes: 5
 
     steps:
@@ -30,14 +28,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
           HTTP_TIMEOUT: "20"
 
-          # funding threshold (0.10%)
-          THRESH: "0.0010"
-
-          # sadece büyük coinler
+          # PRO ayarlar:
+          THRESH: "0.005"         # 0.50%
+          ONLY_EXCHANGES: "BINANCE,BYBIT"
+          TOP_N: "5"
           MAJOR_ONLY: "1"
-
         run: |
           python hunter.py
