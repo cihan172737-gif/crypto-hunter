@@ -2,58 +2,73 @@ import os
 import requests
 from datetime import datetime
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
+HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "20"))
 
-URL = "https://api.coingecko.com/api/v3/derivatives"
+TG_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TG_CHAT  = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
-THRESH = 0.0005
+def now():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-
-def send(msg):
+def tg_send(text: str) -> None:
+    # Telegram env yoksa "success ama mesaj yok" olmasın diye job'u patlat
+    if not TG_TOKEN or not TG_CHAT:
+        raise SystemExit(f"❌ Telegram ENV missing. TOKEN? {bool(TG_TOKEN)} CHAT? {bool(TG_CHAT)}")
 
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    r = requests.post(url, json={"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}, timeout=HTTP_TIMEOUT)
 
-    requests.post(url, json={
-        "chat_id": TG_CHAT,
-        "text": msg
-    })
-
+    # Telegram 200 dönmezse job FAIL olsun ki hemen fark edesin
+    if r.status_code != 200:
+        raise SystemExit(f"❌ Telegram HTTP {r.status_code}: {r.text[:300]}")
 
 def main():
+    # 1) MESAJ GARANTİ: daha en başta ping
+    tg_send(f"🚀 Hunter started ({now()})")
 
-    r = requests.get(URL)
+    # 2) Veri kaynağı (şimdilik CoinGecko derivatives — ücretsiz)
+    # Not: CoinGecko bazen rate limit yapabilir; biz hatayı yakalayıp Telegram'a yazacağız.
+    url = "https://api.coingecko.com/api/v3/derivatives"
 
-    data = r.json()
+    try:
+        r = requests.get(url, timeout=HTTP_TIMEOUT)
+        if r.status_code != 200:
+            tg_send(f"⚠️ Data source HTTP {r.status_code}\n{r.text[:200]}\n\n{now()}")
+            return
 
-    alerts = []
+        data = r.json()
+        if not isinstance(data, list):
+            tg_send(f"⚠️ Unexpected data format from source. Keys: {list(data.keys())[:10]}\n\n{now()}")
+            return
 
-    for x in data:
+        # basit tarama: funding_rate alanı olanları topla
+        alerts = []
+        THRESH = float(os.getenv("THRESH", "0.0005"))  # 0.0005 => %0.05
 
-        if x["market"] == "Binance Futures":
+        for x in data:
+            fr = x.get("funding_rate")
+            sym = x.get("symbol") or ""
+            market = x.get("market") or ""
+            if fr is None:
+                continue
+            try:
+                fr = float(fr)
+            except:
+                continue
 
-            fr = x["funding_rate"]
+            if abs(fr) >= THRESH:
+                alerts.append(f"🚨 {sym} | {market} | funding={(fr*100):.3f}%")
 
-            if fr and abs(fr) > THRESH:
+        if alerts:
+            msg = "Funding Scan\n\n" + "\n".join(alerts[:30]) + f"\n\n{now()}"
+        else:
+            msg = f"Funding Scan\n\nScan OK ✅\nNo alerts\n\n{now()}"
 
-                alerts.append(
-                    f"🚨 {x['symbol']} funding {(fr*100):.3f}%"
-                )
+        tg_send(msg)
 
-    msg = "Funding Scan\n\n"
-
-    if alerts:
-
-        msg += "\n".join(alerts)
-
-    else:
-
-        msg += "Scan OK ✅\nNo alerts"
-
-    msg += "\n\n" + datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-    send(msg)
-
+    except Exception as e:
+        # 3) API patlarsa bile Telegram’a hata mesajı gitsin
+        tg_send(f"⚠️ Exception: {repr(e)}\n\n{now()}")
 
 if __name__ == "__main__":
     main()
