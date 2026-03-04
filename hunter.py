@@ -1,76 +1,93 @@
+# hunter.py
+# Bybit Funding Alerts (GitHub Actions / Render uyumlu)
+# - 50 coin tarama (varsayılan liste)
+# - 3 seviyeli alarm (LOW/MID/HIGH)
+# - Telegram’a sadece alarm veya istersen “Scan OK” da gönderir
+# - Bybit 403 olursa farklı base URL’leri dener ve hataları raporlar
+
 import os
 import time
+import json
 import requests
-from typing import List, Tuple, Optional
 from datetime import datetime, timezone
+from typing import List, Tuple, Optional
 
-# =========================
-# CONFIG
-# =========================
+# ---------------- CONFIG ----------------
+DEFAULT_SYMBOLS_50 = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","TRXUSDT",
+    "MATICUSDT","DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","FILUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT",
+    "INJUSDT","NEARUSDT","ETCUSDT","XLMUSDT","ICPUSDT","AAVEUSDT","UNIUSDT","IMXUSDT","SEIUSDT","FTMUSDT",
+    "RUNEUSDT","GALAUSDT","PEPEUSDT","WIFUSDT","TONUSDT","SHIBUSDT","HBARUSDT","EGLDUSDT","THETAUSDT","SNXUSDT",
+    "KAVAUSDT","ALGOUSDT","FLOWUSDT","SANDUSDT","MANAUSDT","AXSUSDT","CHZUSDT","ENJUSDT","DYDXUSDT","KSMUSDT",
+]
 
-BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com").rstrip("/")
-TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "20"))
+# GitHub Actions IP'leri Bybit'te bazen 403 yiyebiliyor; birkaç base deniyoruz
+BYBIT_BASES = [
+    os.getenv("BYBIT_BASE", "").strip(),
+    "https://api.bybit.com",
+    "https://api2.bybit.com",
+]
+BYBIT_BASES = [b for b in BYBIT_BASES if b]
+
+HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "20"))
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-ALERT_ONLY = os.getenv("ALERT_ONLY", "1") == "1"        # 1: sadece sinyal bas
-SEND_IF_EMPTY = os.getenv("SEND_IF_EMPTY", "0") == "1"  # 1: sinyal yoksa da mesaj at
-SCAN_OK = os.getenv("SCAN_OK", "1") == "1"              # 1: her taramada Scan OK gönder
+# 1 ise: sadece alarm gönder (no alerts olduğunda gönderme)
+ALERT_ONLY = os.getenv("ALERT_ONLY", "1") == "1"
+# 1 ise: no alerts olsa bile Scan OK gönder
+SEND_IF_EMPTY = os.getenv("SEND_IF_EMPTY", "1") == "1"
 
-# 3'lü funding eşikleri (mutlak değer)
-# 0.0010 = %0.10, 0.0015 = %0.15, 0.0020 = %0.20
-LEVELS = os.getenv("FUNDING_LEVELS", "0.0010,0.0015,0.0020")
-FUNDING_LEVELS = sorted([float(x.strip()) for x in LEVELS.split(",") if x.strip()])
+# 3 seviyeli eşikler (funding rate mutlak değeri)
+# örnek: 0.0003 = %0.03
+THRESH_LOW  = float(os.getenv("THRESH_LOW",  "0.0003"))
+THRESH_MID  = float(os.getenv("THRESH_MID",  "0.0005"))
+THRESH_HIGH = float(os.getenv("THRESH_HIGH", "0.0008"))
 
-# filtreler (daha az gürültü)
-# 5dk mumlarda minimum hareket (0.003 = %0.30)
-MIN_5M_MOVE = float(os.getenv("MIN_5M_MOVE", "0.003"))
-# son 5dk volume / önceki 5dk volume oranı (1.5 = %50 artış)
-MIN_VOL_SPIKE = float(os.getenv("MIN_VOL_SPIKE", "1.5"))
+# likidite filtresi (turnover24h). 0 ise kapalı.
+MIN_TURNOVER_24H = float(os.getenv("MIN_TURNOVER_24H", "0"))
 
-# Bybit kline ayarları
-KLINE_INTERVAL = os.getenv("KLINE_INTERVAL", "5")  # 5 dakikalık mum
-KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "10"))  # düşük tutuyoruz (rate limit/403 azaltır)
+# semboller env’den gelirse onu kullanır; yoksa symbols.txt; yoksa default 50
+SYMBOLS_ENV = os.getenv("SYMBOLS", "").strip()
 
-# İstekler arası bekleme (rate limit/403 azaltır)
-REQ_SLEEP = float(os.getenv("REQ_SLEEP", "0.35"))
-
-# =========================
-# DEFAULT SYMBOLS (50 adet, yüksek hacim)
-# =========================
-DEFAULT_SYMBOLS_50 = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT","MATICUSDT",
-    "DOTUSDT","LTCUSDT","TRXUSDT","ATOMUSDT","NEARUSDT","OPUSDT","ARBUSDT","APTUSDT","SUIUSDT","INJUSDT",
-    "TIAUSDT","SEIUSDT","FILUSDT","XLMUSDT","ETCUSDT","BCHUSDT","ICPUSDT","UNIUSDT","AAVEUSDT","MKRUSDT",
-    "RUNEUSDT","GALAUSDT","SANDUSDT","APEUSDT","WIFUSDT","PEPEUSDT","SHIBUSDT","1000BONKUSDT","FLOKIUSDT","JUPUSDT",
-    "DYDXUSDT","IMXUSDT","STXUSDT","KASUSDT","FETUSDT","RNDRUSDT","TAOUSDT","PYTHUSDT","LDOUSDT","CRVUSDT",
-]
-
-# =========================
-# HTTP helpers
-# =========================
-
-SESSION = requests.Session()
-BASE_HEADERS = {
-    # 403 fix: Bybit bazı ortamlarda UA/Accept bekliyor
-    "User-Agent": "Mozilla/5.0 (compatible; crypto-hunter/1.0)",
-    "Accept": "application/json",
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; crypto-hunter/1.0; +https://github.com/)",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9,tr;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
+# --------------- HELPERS ---------------
+def now_str() -> str:
+    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-def bybit_get(path: str, params: dict) -> dict:
-    url = f"{BYBIT_BASE}{path}"
-    r = SESSION.get(url, params=params, headers=BASE_HEADERS, timeout=TIMEOUT)
-    # 403/429 olursa loglamak için raise
-    r.raise_for_status()
-    data = r.json()
-    return data
+def load_symbols() -> List[str]:
+    if SYMBOLS_ENV:
+        # "BTCUSDT,ETHUSDT" gibi
+        parts = [p.strip().upper() for p in SYMBOLS_ENV.replace("\n", ",").split(",")]
+        parts = [p for p in parts if p]
+        return parts
 
+    # symbols.txt varsa oku
+    try:
+        if os.path.exists("symbols.txt"):
+            with open("symbols.txt", "r", encoding="utf-8") as f:
+                syms = []
+                for line in f:
+                    line = line.strip().upper()
+                    if not line or line.startswith("#"):
+                        continue
+                    # satırda virgül varsa böl
+                    for p in line.replace(" ", "").split(","):
+                        if p:
+                            syms.append(p)
+                return syms if syms else DEFAULT_SYMBOLS_50
+    except Exception:
+        pass
 
-# =========================
-# Telegram
-# =========================
+    return DEFAULT_SYMBOLS_50
 
 def tg_send(text: str) -> None:
     if not TG_TOKEN or not TG_CHAT:
@@ -78,211 +95,159 @@ def tg_send(text: str) -> None:
         return
 
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
-    r = SESSION.post(url, json=payload, timeout=TIMEOUT)
-    r.raise_for_status()
-
-
-# =========================
-# Symbols
-# =========================
-
-def load_symbols() -> List[str]:
-    # 1) ENV SYMBOLS varsa onu kullan
-    env = os.getenv("SYMBOLS", "").strip()
-    if env:
-        syms = [x.strip().upper() for x in env.split(",") if x.strip()]
-        return syms
-
-    # 2) symbols.txt varsa oku (senin eklediğin dosya)
-    if os.path.exists("symbols.txt"):
-        out = []
-        with open("symbols.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                s = line.strip().upper()
-                if not s or s.startswith("#"):
-                    continue
-                # virgülle yazdıysan parçala
-                if "," in s:
-                    out.extend([x.strip().upper() for x in s.split(",") if x.strip()])
-                else:
-                    out.append(s)
-        # uniq
-        uniq = []
-        seen = set()
-        for s in out:
-            if s not in seen:
-                uniq.append(s)
-                seen.add(s)
-        return uniq[:50] if len(uniq) > 50 else uniq
-
-    # 3) yoksa default 50
-    return DEFAULT_SYMBOLS_50
-
-
-# =========================
-# Market data
-# =========================
-
-def get_funding(symbol: str) -> Optional[float]:
-    # Bybit v5 tickers ile funding rate (linear perp)
-    # endpoint: /v5/market/tickers?category=linear&symbol=BTCUSDT
-    data = bybit_get("/v5/market/tickers", {"category": "linear", "symbol": symbol})
-    if data.get("retCode") != 0:
-        return None
-    lst = (data.get("result") or {}).get("list") or []
-    if not lst:
-        return None
-    item = lst[0]
-    fr = item.get("fundingRate")
-    if fr is None:
-        return None
+    payload = {
+        "chat_id": TG_CHAT,
+        "text": text,
+        "disable_web_page_preview": True
+    }
     try:
-        return float(fr)
-    except:
-        return None
+        r = requests.post(url, json=payload, timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+    except Exception as e:
+        print("Telegram gönderim hatası:", repr(e))
 
-
-def get_kline_5m(symbol: str) -> Optional[List[List[str]]]:
-    # endpoint: /v5/market/kline?category=linear&symbol=BTCUSDT&interval=5&limit=10
-    data = bybit_get("/v5/market/kline", {
-        "category": "linear",
-        "symbol": symbol,
-        "interval": KLINE_INTERVAL,
-        "limit": KLINE_LIMIT
-    })
-    if data.get("retCode") != 0:
-        return None
-    # result.list: newest -> oldest (Bybit'te çoğu zaman newest first)
-    kl = (data.get("result") or {}).get("list")
-    if not kl:
-        return None
-    return kl
-
-
-def calc_move_and_vol_spike(kl: List[List[str]]) -> Tuple[float, float]:
+def http_get_json(url: str, params: dict) -> Tuple[Optional[dict], Optional[str], int]:
     """
-    kl rows (strings) like:
-    [ startTime, open, high, low, close, volume, turnover ]
-    Move: last close vs prev close
-    Vol spike: last volume / prev volume
+    returns: (json, error_text, status_code)
     """
-    # En güvenlisi: zamana göre sırala (oldest -> newest)
-    rows = sorted(kl, key=lambda x: int(x[0]))
-    if len(rows) < 3:
-        return 0.0, 0.0
-
-    prev = rows[-2]
-    last = rows[-1]
-
-    prev_close = float(prev[4])
-    last_close = float(last[4])
-
-    prev_vol = float(prev[5])
-    last_vol = float(last[5])
-
-    move = (last_close - prev_close) / prev_close if prev_close else 0.0
-    vol_spike = (last_vol / prev_vol) if prev_vol else 0.0
-    return move, vol_spike
-
-
-def pick_level(abs_fr: float) -> Optional[float]:
-    # 3'lü seviyeden hangisine girdiğini döndürür (en yüksek yakalanan)
-    hit = None
-    for lv in FUNDING_LEVELS:
-        if abs_fr >= lv:
-            hit = lv
-    return hit
-
-
-# =========================
-# Main scan
-# =========================
-
-def scan() -> Tuple[List[str], List[str]]:
-    symbols = load_symbols()
-    alerts = []
-    errors = []
-
-    for i, sym in enumerate(symbols, start=1):
+    try:
+        r = requests.get(url, params=params, headers=HEADERS, timeout=HTTP_TIMEOUT)
+        status = r.status_code
+        if status != 200:
+            return None, f"{status} Client Error: {r.reason} for url: {r.url}", status
         try:
-            fr = get_funding(sym)
-            time.sleep(REQ_SLEEP)
+            return r.json(), None, status
+        except Exception:
+            return None, f"Invalid JSON for url: {r.url}", status
+    except Exception as e:
+        return None, str(e), 0
 
-            if fr is None:
-                continue
+def bybit_ticker(symbol: str) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Bybit v5 market/tickers:
+    https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT
+    """
+    params = {"category": "linear", "symbol": symbol}
 
-            abs_fr = abs(fr)
-            lvl = pick_level(abs_fr)
-            if lvl is None:
-                continue
+    last_err = None
+    for base in BYBIT_BASES:
+        url = f"{base}/v5/market/tickers"
+        js, err, _ = http_get_json(url, params)
+        if err:
+            last_err = err
+            # 403 gibi durumlarda diğer base'i dene
+            continue
+        if not js:
+            last_err = "Empty response"
+            continue
+        return js, None
 
-            kl = get_kline_5m(sym)
-            time.sleep(REQ_SLEEP)
+    return None, last_err or "Unknown error"
 
-            if not kl:
-                continue
+def parse_ticker(js: dict) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """
+    returns: (funding_rate, turnover24h, error)
+    """
+    try:
+        if str(js.get("retCode")) != "0":
+            return None, None, f"retCode={js.get('retCode')} retMsg={js.get('retMsg')}"
+        result = js.get("result") or {}
+        lst = result.get("list") or []
+        if not lst:
+            return None, None, "No ticker list"
+        item = lst[0] or {}
 
-            move, vol_spike = calc_move_and_vol_spike(kl)
+        fr = item.get("fundingRate")
+        to = item.get("turnover24h") or item.get("turnover24H")  # bazen isim farkı
+        funding = float(fr) if fr is not None and fr != "" else None
+        turnover = float(to) if to is not None and to != "" else None
+        return funding, turnover, None
+    except Exception as e:
+        return None, None, f"Parse error: {e}"
 
-            # Filtre: funding yüksek + 5m hareket + volume spike
-            if abs(move) < MIN_5M_MOVE:
-                continue
-            if vol_spike < MIN_VOL_SPIKE:
-                continue
+def classify(abs_fr: float) -> Optional[str]:
+    if abs_fr >= THRESH_HIGH:
+        return "HIGH"
+    if abs_fr >= THRESH_MID:
+        return "MID"
+    if abs_fr >= THRESH_LOW:
+        return "LOW"
+    return None
 
-            direction = "LONG squeeze riski" if fr > 0 else "SHORT squeeze riski"
-            alerts.append(
-                f"🔥 {sym}\n"
-                f"Funding: {fr:+.6f} (seviye ≥ {lvl:.4f})\n"
-                f"5m Move: {move*100:+.2f}%\n"
-                f"Vol Spike: x{vol_spike:.2f}\n"
-                f"Yorum: {direction}"
-            )
+def fmt_pct(x: float) -> str:
+    # fundingRate örn 0.0005 => %0.05
+    return f"{x*100:.3f}%"
 
-        except requests.HTTPError as e:
-            # 403/429 vb.
-            errors.append(f"{sym} | Error: {str(e)}")
-        except Exception as e:
-            errors.append(f"{sym} | Error: {type(e).__name__}: {e}")
+# --------------- MAIN ---------------
+def main() -> None:
+    symbols = load_symbols()
 
-    return alerts, errors
+    alerts: List[str] = []
+    errors: List[str] = []
 
+    for sym in symbols:
+        js, err = bybit_ticker(sym)
+        if err:
+            errors.append(f"{sym} | Error: {err}")
+            continue
 
-def main():
-    now = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    title = "Bybit Funding Alerts"
+        fr, turnover, perr = parse_ticker(js)
+        if perr:
+            errors.append(f"{sym} | Error: {perr}")
+            continue
 
-    alerts, errors = scan()
+        if fr is None:
+            errors.append(f"{sym} | Error: fundingRate missing")
+            continue
 
-    # Hataları da bildirelim (çok fazla olursa kısalt)
-    err_text = ""
+        if MIN_TURNOVER_24H > 0 and (turnover is None or turnover < MIN_TURNOVER_24H):
+            # likidite düşükse pas geç
+            continue
+
+        lvl = classify(abs(fr))
+        if lvl:
+            direction = "POS" if fr > 0 else "NEG"
+            # NEG funding = long’lar para alıyor, POS funding = short’lar para alıyor (genel yorum)
+            alerts.append(f"🚨 {lvl} | {sym} | funding={fmt_pct(fr)} ({direction})")
+
+        # ufak delay: rate limit riskini azalt
+        time.sleep(0.15)
+
+    header = "Bybit Funding Alerts"
+    stamp = now_str()
+
+    msg_lines = [header]
+
+    # 403 gibi durumlarda önce hatayı gör
     if errors:
-        # Çok spam olmasın diye ilk 10
-        first = errors[:10]
-        err_text = "\n\n⚠️ Errors (first 10):\n" + "\n".join(first)
+        msg_lines.append(f"⚠️ Errors (first 10):")
+        msg_lines.extend(errors[:10])
 
     if alerts:
-        msg = f"{title}\n\n" + "\n\n".join(alerts) + f"\n\n🕒 {now}" + err_text
-        tg_send(msg)
-        print("Sent alerts:", len(alerts))
+        msg_lines.append("")
+        msg_lines.append(f"✅ Alerts ({len(alerts)}):")
+        msg_lines.extend(alerts[:50])  # çok uzamasın
+        msg_lines.append("")
+        msg_lines.append(f"🕒 {stamp}")
+
+        tg_send("\n".join(msg_lines))
+        print("\n".join(msg_lines))
         return
 
-    # Alert yoksa
-    if SEND_IF_EMPTY:
-        base = f"{title}\n\nNo alerts.\n🕒 {now}"
-        if SCAN_OK:
-            base = f"{title}\n\nScan OK ✅\nNo alerts.\n🕒 {now}"
-        if err_text:
-            base += err_text
-        tg_send(base)
-        print("Sent empty status.")
+    # No alerts
+    if not ALERT_ONLY and SEND_IF_EMPTY:
+        msg_lines.append("Scan OK ✅")
+        msg_lines.append("No alerts.")
+        msg_lines.append(stamp)
+        tg_send("\n".join(msg_lines))
+        print("\n".join(msg_lines))
     else:
-        # Telegram'a boş göndermeyelim ama console'a yazalım
-        print(f"{title} | No alerts. | {now}")
+        # sadece logla
+        print(f"{header}\nNo alerts.\n{stamp}")
         if errors:
-            print("Errors:", errors[:10])
-
+            print("Errors(first 10):")
+            for e in errors[:10]:
+                print(e)
 
 if __name__ == "__main__":
     main()
