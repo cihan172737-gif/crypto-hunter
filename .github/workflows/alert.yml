@@ -30,9 +30,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HTTP_TIMEOUT: "20"
 
-          # PRO ayarlar:
-          THRESH: "0.005"         # 0.50%
-          ONLY_EXCHANGES: "BINANCE,BYBIT"
+          # Temkinli: sadece çok yüksek POS funding
+          THRESH: "0.005"     # 0.50%
           TOP_N: "5"
           MAJOR_ONLY: "1"
         run: |
