@@ -29,24 +29,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          # Alarm yoksa bile mesaj atsın:
           SEND_IF_EMPTY: "1"
-          ALERT_ONLY: "0"
+          HTTP_TIMEOUT: "20"
 
-          # İstersen eşikleri buradan yönet:
           THRESH_LOW: "0.0003"
           THRESH_MID: "0.0005"
           THRESH_HIGH: "0.0008"
-
-          # Likidite filtresi (0 kapalı):
-          MIN_TURNOVER_24H: "0"
-
-          # İstersen symbol listesini env'den ver (symbols.txt varsa gerek yok):
-          # SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT"
-
-          # Bybit base (boş bırakabilirsin):
-          # BYBIT_BASE: "https://api.bybit.com"
-
-          HTTP_TIMEOUT: "20"
         run: |
           python hunter.py
