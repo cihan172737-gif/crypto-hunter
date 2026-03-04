@@ -3,187 +3,141 @@ import time
 import requests
 from datetime import datetime, timezone
 
-# ---------------------------
+# ----------------------------
 # CONFIG
-# ---------------------------
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]  # istersen çoğaltırız
-TIMEFRAME_HOURS = 8  # "8 saat daha iyi" dediğin için
-MIN_ABS_FUNDING = 0.0005  # 0.05% / 8h eşik (kalite için); istersen ayarlarız
+# ----------------------------
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]  # Bybit linear perp sembolleri (USDT)
+TIMEFRAME_HOURS = 8  # funding periyodu genelde 8h
+MIN_ABS_FUNDING = 0.0005  # 0.05% (8h)
 
-ALERT_ONLY = os.getenv("ALERT_ONLY", "1") == "1"        # sadece sinyal varsa mesaj
-SEND_IF_EMPTY = os.getenv("SEND_IF_EMPTY", "0") == "1"  # sinyal yoksa da mesaj at
+ALERT_ONLY = os.getenv("ALERT_ONLY", "1") == "1"
+SEND_IF_EMPTY = os.getenv("SEND_IF_EMPTY", "0") == "1"
 
-TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Binance futures endpoints (GitHub runner bazılarını bloklayabiliyor)
-BASE_CANDIDATES = [
-    "https://www.binance.com",     # çoğu zaman daha iyi
-    "https://fapi.binance.com",    # klasik
-    "https://api.binance.com",     # bazı bölgelerde fallback
-]
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; CryptoHunter/1.0; +https://github.com/)"
-}
-
+# Bybit v5 public API
+BASE_URL = "https://api.bybit.com"
 TIMEOUT = 20
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; crypto-hunter/1.0)"
+}
 
-# ---------------------------
+# ----------------------------
 # HELPERS
-# ---------------------------
-def tg_send(text: str):
+# ----------------------------
+def tg_send(text: str) -> None:
     if not TG_TOKEN or not TG_CHAT:
-        # secrets eksikse burada düşmesin diye
-        print("Telegram secrets missing. Message:\n", text)
+        print("Telegram env eksik: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID")
+        print(text)
         return
+
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
-    try:
-        requests.post(url, json=payload, timeout=TIMEOUT)
-    except Exception as e:
-        print("Telegram send error:", e)
+    r = requests.post(url, json=payload, timeout=TIMEOUT)
+    if r.status_code >= 300:
+        print("Telegram gönderim hatası:", r.status_code, r.text)
 
-
-def get_json(path: str, params: dict | None = None):
+def bybit_linear_tickers():
     """
-    Aynı endpointi 3 farklı base ile dener.
-    451/403 gibi engellerde diğer base'e geçer.
+    Bybit: v5/market/tickers?category=linear
+    Dönen listede fundingRate ve nextFundingTime var.
     """
-    last_err = None
-    for base in BASE_CANDIDATES:
-        url = f"{base}{path}"
-        try:
-            r = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
-            # 451/403 gibi durumlarda raise ile yakalayacağız
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.HTTPError as e:
-            last_err = e
-            # 451/403/418/429 vb. durumlarda diğer base'e geç
-            try:
-                code = e.response.status_code
-            except Exception:
-                code = None
-            print(f"HTTPError {code} @ {url}")
-            continue
-        except Exception as e:
-            last_err = e
-            print(f"Error @ {url}: {e}")
-            continue
-
-    raise last_err if last_err else RuntimeError("All endpoints failed")
-
+    url = f"{BASE_URL}/v5/market/tickers"
+    params = {"category": "linear"}  # USDT perpetual/futures
+    r = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+    data = r.json()
+    if data.get("retCode") != 0:
+        raise RuntimeError(f"Bybit API hata: {data}")
+    return data["result"]["list"]
 
 def fmt_pct(x: float) -> str:
-    return f"{x*100:.3f}%"
+    return f"{x*100:.4f}%"
 
+def ms_to_dt(ms: int) -> str:
+    try:
+        dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone()
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return "?"
 
-def now_tr():
-    # TR saatine yakın göstermek için (UTC+3 sabit)
-    return datetime.now(timezone.utc).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def scan_bybit_funding():
+    tickers = bybit_linear_tickers()
 
+    wanted = set(SYMBOLS)
+    hits = []
 
-# ---------------------------
-# SIGNAL LOGIC (A+ basit ama disiplinli)
-# ---------------------------
-def funding_rate(symbol: str) -> float:
-    # premiumIndex: {"lastFundingRate": "...", "nextFundingTime": ...}
-    j = get_json("/fapi/v1/premiumIndex", {"symbol": symbol})
-    return float(j["lastFundingRate"])
+    for it in tickers:
+        sym = it.get("symbol")
+        if sym not in wanted:
+            continue
 
+        # fundingRate bazı anlarda boş/None gelebilir
+        fr_raw = it.get("fundingRate")
+        if fr_raw is None or fr_raw == "":
+            continue
 
-def choose_direction(fr: float) -> str:
-    """
-    Funding pozitif ve yüksekse: piyasada long kalabalık -> SHORT bias
-    Funding negatif ve yüksekse: short kalabalık -> LONG bias
-    """
-    if fr > 0:
-        return "SHORT"
-    if fr < 0:
-        return "LONG"
-    return "FLAT"
+        try:
+            fr = float(fr_raw)
+        except ValueError:
+            continue
 
+        if abs(fr) >= MIN_ABS_FUNDING:
+            next_funding_ms = int(it.get("nextFundingTime") or 0)
+            last_price = it.get("lastPrice") or "?"
+            # 24h turnover/volume alanları bazen farklı gelebilir
+            turnover_24h = it.get("turnover24h") or it.get("turnover") or "?"
+            vol_24h = it.get("volume24h") or it.get("volume") or "?"
 
-def score_setup(fr: float) -> str:
-    """
-    Basit A+ kuralı:
-    - |funding| >= MIN_ABS_FUNDING ise aday
-    """
-    if abs(fr) >= MIN_ABS_FUNDING:
-        return "A+"
-    return "NO"
+            hits.append({
+                "symbol": sym,
+                "funding": fr,
+                "nextFundingTime": next_funding_ms,
+                "lastPrice": last_price,
+                "turnover24h": turnover_24h,
+                "volume24h": vol_24h,
+            })
 
+    # funding mutlak değere göre büyükten küçüğe
+    hits.sort(key=lambda x: abs(x["funding"]), reverse=True)
+    return hits
 
-def build_message(signals: list[dict], note: str = "") -> str:
-    ts = now_tr()
-    lines = [f"🧠 Crypto Hunter Alert ({ts})"]
-    if note:
-        lines.append(note)
-    lines.append("")
+def build_message(hits):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    header = f"Bybit A+ Funding Scan ({TIMEFRAME_HOURS}h) • {now}\nEşik: |funding| ≥ {fmt_pct(MIN_ABS_FUNDING)}\n"
 
-    if not signals:
-        lines.append("🧊 A+ yok (şartlar sağlanmadı).")
-        return "\n".join(lines)
+    if not hits:
+        return header + "\nSonuç: eşik üstü fırsat yok."
 
-    lines.append("🚨 A+ SETUP BULUNDU")
-    lines.append("")
-
-    # solda olsun dedin: formatı soldan hizalı tutuyorum
-    for s in signals:
-        lines.append(f"• {s['symbol']}")
-        lines.append(f"  Funding: {s['funding_pct']}")
-        lines.append(f"  Zaman: {TIMEFRAME_HOURS}h")
-        lines.append(f"  Skor: {s['score']}")
-        lines.append(f"  ---")
-        lines.append("")
-
-    # en altta long/short yazsın dedin:
-    # birden fazla sinyal varsa ilkini yazıyoruz (istersen hepsine ayrı yazarız)
-    lines.append(f"📌 SONUÇ: {signals[0]['direction']}")
+    lines = [header, ""]
+    for i, h in enumerate(hits, 1):
+        lines.append(
+            f"{i}) {h['symbol']} | funding: {fmt_pct(h['funding'])} | next: {ms_to_dt(h['nextFundingTime'])}\n"
+            f"   price: {h['lastPrice']} | vol24h: {h['volume24h']} | turn24h: {h['turnover24h']}"
+        )
     return "\n".join(lines)
 
-
 def main():
-    signals = []
-    errors = []
+    try:
+        hits = scan_bybit_funding()
+        msg = build_message(hits)
 
-    for sym in SYMBOLS:
-        try:
-            fr = funding_rate(sym)
-            sc = score_setup(fr)
-            if sc == "A+":
-                direction = choose_direction(fr)
-                signals.append({
-                    "symbol": sym,
-                    "funding": fr,
-                    "funding_pct": fmt_pct(fr),
-                    "score": sc,
-                    "direction": direction
-                })
-        except Exception as e:
-            errors.append(f"{sym}: {type(e).__name__} - {e}")
+        if ALERT_ONLY:
+            if hits:
+                tg_send(msg)
+            else:
+                if SEND_IF_EMPTY:
+                    tg_send(msg)
+                else:
+                    print(msg)
+        else:
+            tg_send(msg)
 
-        # küçük throttle
-        time.sleep(0.3)
-
-    # Eğer hiç sinyal yoksa ve SEND_IF_EMPTY kapalıysa sessiz kal
-    if not signals and ALERT_ONLY and not SEND_IF_EMPTY and not errors:
-        print("No A+ and SEND_IF_EMPTY=0. Exiting silently.")
-        return
-
-    note = ""
-    if errors:
-        # GitHub runner Binance'ı engelliyorsa burada görürüz (451/403 vb.)
-        note = "⚠️ Veri erişim uyarısı:\n" + "\n".join(errors[:6])
-        if len(errors) > 6:
-            note += f"\n... +{len(errors)-6} hata daha"
-
-    msg = build_message(signals, note=note)
-    tg_send(msg)
-    print(msg)
-
+    except Exception as e:
+        err = f"Bybit scan ERROR: {e}"
+        print(err)
+        tg_send(err)
 
 if __name__ == "__main__":
     main()
