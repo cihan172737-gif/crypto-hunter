@@ -8,6 +8,8 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -17,12 +19,34 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install requests
-        run: pip install requests
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
       - name: Run hunter
         env:
-  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  SEND_IF_EMPTY: "1"
-  ALERT_ONLY: "0"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          # Alarm yoksa bile mesaj atsın:
+          SEND_IF_EMPTY: "1"
+          ALERT_ONLY: "0"
+
+          # İstersen eşikleri buradan yönet:
+          THRESH_LOW: "0.0003"
+          THRESH_MID: "0.0005"
+          THRESH_HIGH: "0.0008"
+
+          # Likidite filtresi (0 kapalı):
+          MIN_TURNOVER_24H: "0"
+
+          # İstersen symbol listesini env'den ver (symbols.txt varsa gerek yok):
+          # SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT"
+
+          # Bybit base (boş bırakabilirsin):
+          # BYBIT_BASE: "https://api.bybit.com"
+
+          HTTP_TIMEOUT: "20"
+        run: |
+          python hunter.py
