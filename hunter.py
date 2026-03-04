@@ -1,87 +1,172 @@
-import os
-import time
 import requests
+import os
+import json
+import time
+from datetime import datetime, timedelta
 
-# --- CONFIG ---
-SYMBOLS = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(",")
-BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com")
-TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "20"))
+BYBIT_API = "https://api.bybit.com"
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-ALERT_ONLY = os.getenv("ALERT_ONLY", "1") == "1"
-SEND_IF_EMPTY = os.getenv("SEND_IF_EMPTY", "0") == "1"
+MAX_ALERTS = 3
+COOLDOWN_MINUTES = 180
 
-# Funding threshold (ör: 0.0005 = %0.05)
-THRESHOLD = float(os.getenv("THRESHOLD", "0.0005"))
+THRESHOLDS = [
+    0.0010,
+    0.0015,
+    0.0020
+]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; crypto-hunter/1.0; +https://github.com/)",
-    "Accept": "application/json,text/plain,*/*",
-}
+COOLDOWN_FILE = "cooldown.json"
 
-def tg_send(text: str):
-    if not TG_TOKEN or not TG_CHAT:
-        print("Telegram env eksik. Mesaj:\n", text)
-        return
 
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT, "text": text}
-    r = requests.post(url, json=payload, timeout=TIMEOUT)
-    r.raise_for_status()
+def load_symbols():
+    if os.path.exists("symbols.txt"):
+        with open("symbols.txt") as f:
+            return [s.strip() for s in f.readlines() if s.strip()]
+    return ["BTCUSDT", "ETHUSDT"]
 
-def bybit_funding(symbol: str) -> float:
-    # Bybit v5 endpoint (linear perpetual)
-    url = f"{BYBIT_BASE}/v5/market/tickers"
-    params = {"category": "linear", "symbol": symbol}
-    r = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
 
-    if r.status_code != 200:
-        raise RuntimeError(f"Bybit HTTP {r.status_code}: {r.text[:200]}")
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    data = r.json()
-    if data.get("retCode") != 0:
-        raise RuntimeError(f"Bybit retCode {data.get('retCode')}: {data.get('retMsg')}")
+    requests.post(
+        url,
+        json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg
+        }
+    )
 
-    lst = data.get("result", {}).get("list", [])
-    if not lst:
-        raise RuntimeError(f"Bybit empty list for {symbol}")
 
-    item = lst[0]
-    fr = item.get("fundingRate")
-    if fr is None:
-        raise RuntimeError(f"fundingRate missing for {symbol}: {item}")
+def get_funding(symbol):
+    url = f"{BYBIT_API}/v5/market/tickers"
 
-    return float(fr)
+    r = requests.get(
+        url,
+        params={
+            "category": "linear",
+            "symbol": symbol
+        }
+    ).json()
+
+    return float(r["result"]["list"][0]["fundingRate"])
+
+
+def get_open_interest(symbol):
+    url = f"{BYBIT_API}/v5/market/open-interest"
+
+    r = requests.get(
+        url,
+        params={
+            "category": "linear",
+            "symbol": symbol,
+            "intervalTime": "5min"
+        }
+    ).json()
+
+    data = r["result"]["list"]
+
+    if len(data) < 2:
+        return 0
+
+    oi_now = float(data[-1]["openInterest"])
+    oi_prev = float(data[-2]["openInterest"])
+
+    return oi_now - oi_prev
+
+
+def load_cooldown():
+    if os.path.exists(COOLDOWN_FILE):
+        with open(COOLDOWN_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_cooldown(data):
+    with open(COOLDOWN_FILE, "w") as f:
+        json.dump(data, f)
+
+
+def check_tier(value):
+
+    abs_val = abs(value)
+
+    for t in reversed(THRESHOLDS):
+        if abs_val >= t:
+            return t
+
+    return None
+
 
 def main():
-    lines = []
-    hits = []
 
-    for s in SYMBOLS:
-        s = s.strip()
-        if not s:
-            continue
+    symbols = load_symbols()
+
+    cooldown = load_cooldown()
+
+    alerts = []
+
+    for symbol in symbols:
+
         try:
-            fr = bybit_funding(s)
-            lines.append(f"{s} funding: {fr}")
-            if abs(fr) >= THRESHOLD:
-                hits.append(f"⚠️ {s} funding: {fr} (>= {THRESHOLD})")
-        except Exception as e:
-            lines.append(f"{s} ERROR: {e}")
 
-        time.sleep(0.3)
+            funding = get_funding(symbol)
 
-    if ALERT_ONLY:
-        msg = "Bybit Funding Alerts\n\n" + ("\n".join(hits) if hits else "No alerts.")
-        if hits or SEND_IF_EMPTY:
-            tg_send(msg)
-        print(msg)
-    else:
-        msg = "Bybit Funding Scan\n\n" + "\n".join(lines)
-        tg_send(msg)
-        print(msg)
+            tier = check_tier(funding)
+
+            if not tier:
+                continue
+
+            if symbol in cooldown:
+
+                expire = datetime.fromisoformat(cooldown[symbol])
+
+                if datetime.utcnow() < expire:
+                    continue
+
+            oi_change = get_open_interest(symbol)
+
+            if oi_change <= 0:
+                continue
+
+            if funding > 0:
+                side = "SHORT candidate"
+            else:
+                side = "LONG candidate"
+
+            alerts.append((symbol, funding, tier, side))
+
+            cooldown[symbol] = (
+                datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES)
+            ).isoformat()
+
+            if len(alerts) >= MAX_ALERTS:
+                break
+
+            time.sleep(0.2)
+
+        except Exception:
+            pass
+
+    save_cooldown(cooldown)
+
+    for symbol, funding, tier, side in alerts:
+
+        msg = f"""
+FUNDING ALERT
+
+Coin: {symbol}
+Funding: {funding*100:.3f}%
+
+Tier: {tier*100:.2f}%
+
+Setup: {side}
+"""
+
+        send_telegram(msg)
+
 
 if __name__ == "__main__":
     main()
