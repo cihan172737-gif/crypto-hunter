@@ -2,9 +2,9 @@ name: crypto-hunter-alert
 
 on:
   schedule:
-    # TR 15:00–24:00 arası (UTC 12:00–21:00) her 30 dk tarar
     - cron: "*/30 12-21 * * *"
   workflow_dispatch:
+  push:
 
 jobs:
   run:
