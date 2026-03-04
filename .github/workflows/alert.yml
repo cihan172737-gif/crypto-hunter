@@ -3,7 +3,7 @@ name: crypto-hunter-alert
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/30 * * * *"   # her 30 dk
 
 jobs:
   run:
@@ -25,9 +25,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ALERT_ONLY: "1"
-          SEND_IF_EMPTY: "1"
-          THRESHOLD: "0.0005"
-          SYMBOLS: "BTCUSDT,ETHUSDT"
-          BYBIT_BASE: "https://api.bybit.com"
+
+          # --- bizim ayarlar ---
+          ALERT_ONLY: "1"          # sadece sinyalde “ALERT” yazsın
+          SEND_IF_EMPTY: "1"       # sinyal yoksa bile “No alerts” mesajı at
+          THRESHOLD: "0.0005"      # funding temel eşik (istersek sonra değiştiririz)
+
+          # 50 coin listesi (senin default)
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,MATICUSDT,DOTUSDT,LTCUSDT,ATOMUSDT,APTUSDT,OPUSDT,ARBUSDT,NEARUSDT,FILUSDT,ETCUSDT,SUIUSDT,AAVEUSDT,INJUSDT,RNDRUSDT,STXUSDT,IMXUSDT,SEIUSDT,TIAUSDT,GRTUSDT,FETUSDT,WLDUSDT,PEPEUSDT,BONKUSDT,SHIBUSDT,RUNEUSDT,DYDXUSDT,JTOUSDT,ORDIUSDT,PYTHUSDT,BLURUSDT,LDOUSDT,GMXUSDT,CRVUSDT,ENSUSDT,COMPUSDT,YFIUSDT,SANDUSDT,MANAUSDT,FLOWUSDT,CHZUSDT,AXSUSDT"
+
         run: python hunter.py
