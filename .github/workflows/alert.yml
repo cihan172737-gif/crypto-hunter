@@ -3,7 +3,7 @@ name: crypto-hunter-alert
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # her 30 dk
+    - cron: "*/15 * * * *"   # her 30 dk
 
 jobs:
   run:
