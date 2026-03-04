@@ -22,7 +22,7 @@ jobs:
 
       - name: Run hunter
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SEND_IF_EMPTY: "1"
-        run: python hunter.py
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  SEND_IF_EMPTY: "1"
+  ALERT_ONLY: "0"
