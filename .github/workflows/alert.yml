@@ -26,12 +26,25 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          # --- bizim ayarlar ---
-          ALERT_ONLY: "1"          # sadece sinyalde “ALERT” yazsın
-          SEND_IF_EMPTY: "1"       # sinyal yoksa bile “No alerts” mesajı at
-          THRESHOLD: "0.0005"      # funding temel eşik (istersek sonra değiştiririz)
+          # --- SISTEM AYARLARI ---
+          ALERT_ONLY: "1"        # 1: sadece sinyal formatlı mesaj
+          SEND_IF_EMPTY: "1"     # 1: sinyal yoksa da Telegram’a “No alerts” gönder
+          HTTP_TIMEOUT: "20"
 
-          # 50 coin listesi (senin default)
+          # --- 3’lü Funding eşikleri (negatif funding arıyoruz) ---
+          # Tier-1 (mild)  : -0.03%
+          # Tier-2 (mid)   : -0.06%
+          # Tier-3 (strong): -0.10%
+          FUNDING_LEVELS: "-0.0003,-0.0006,-0.0010"
+
+          # --- 3’lü filtre ekleri ---
+          # 1h mum ile bakıyoruz (daha az gürültü)
+          KLINE_INTERVAL: "60"
+          KLINE_LIMIT: "50"
+          VOL_SPIKE: "1.8"         # son mum hacmi / önceki ortalama >= 1.8
+          MOMENTUM_MODE: "close>prevclose"  # momentum kontrolü
+
+          # --- 50 coin (hacimli / popüler) ---
           SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,MATICUSDT,DOTUSDT,LTCUSDT,ATOMUSDT,APTUSDT,OPUSDT,ARBUSDT,NEARUSDT,FILUSDT,ETCUSDT,SUIUSDT,AAVEUSDT,INJUSDT,RNDRUSDT,STXUSDT,IMXUSDT,SEIUSDT,TIAUSDT,GRTUSDT,FETUSDT,WLDUSDT,PEPEUSDT,BONKUSDT,SHIBUSDT,RUNEUSDT,DYDXUSDT,JTOUSDT,ORDIUSDT,PYTHUSDT,BLURUSDT,LDOUSDT,GMXUSDT,CRVUSDT,ENSUSDT,COMPUSDT,YFIUSDT,SANDUSDT,MANAUSDT,FLOWUSDT,CHZUSDT,AXSUSDT"
 
         run: python hunter.py
