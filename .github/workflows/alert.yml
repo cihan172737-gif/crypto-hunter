@@ -1,41 +1,36 @@
-name: Crypto Radar
+name: pro-radar
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Install packages
-      run: pip install -r requirements.txt
-
-    - name: Run Funding Scanner
-      run: python hunter.py
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-    - name: Run Level2 Radar
-      run: python level2.py
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-    - name: Run PRO Radar
-      run: python pro_radar.py
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Run PRO Radar
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HTTP_TIMEOUT: "20"
+          FUND_MIN: "0.004"          # 0.40%
+          VOL_SPIKE_PCT: "40"        # proxy: ~4% 24h hareket
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,WIFUSDT,PEPEUSDT,INJUSDT,APTUSDT,ARBUSDT"
+        run: |
+          python pro_radar.py
