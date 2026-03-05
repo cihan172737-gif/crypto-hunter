@@ -1,14 +1,18 @@
-name: liquidation-hunter-pro
+name: crypto-hunter-alert
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"   # her 15 dk (UTC)
+
+concurrency:
+  group: crypto-hunter-alert
+  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
 
     steps:
       - name: Checkout
@@ -24,18 +28,43 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run LIQ Hunter
+      # 1) Secrets/Telegram test (en kritik)
+      - name: Telegram test ping
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          HTTP_TIMEOUT: "20"
-
-          # PRO filters
-          FUND_MIN: "0.0015"
-          OI_MIN_PCT: "5"
-          VOL_SPIKE_MULT: "1.8"
-
-          # coins
-          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,XRPUSDT"
         run: |
-          python liq_hunter.py
+          python - << 'PY'
+          import os, requests, datetime
+          token=os.environ.get("TELEGRAM_BOT_TOKEN")
+          chat=os.environ.get("TELEGRAM_CHAT_ID")
+          if not token or not chat:
+            raise SystemExit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in GitHub Secrets.")
+          text=f"✅ TEST: crypto-hunter-alert started @ {datetime.datetime.utcnow().isoformat()}Z"
+          r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={"chat_id": chat, "text": text, "disable_web_page_preview": True},
+                          timeout=20)
+          r.raise_for_status()
+          print("Telegram test sent.")
+          PY
+
+      # 2) Hunter çalıştır
+      - name: Run hunter
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          # Sadece büyük borsalar: Binance + Bybit
+          EXCHANGES: "binance,bybit"
+
+          # Sembol listesi (istersen değiştir)
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,XRPUSDT"
+
+          # Funding eşikleri (0.25% = 0.0025)
+          FUNDING_POS_MIN: "0.0025"
+          FUNDING_NEG_MIN: "-0.0025"
+
+          # Zaman aşımı
+          HTTP_TIMEOUT: "20"
+        run: |
+          python hunter.py
