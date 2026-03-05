@@ -31,11 +31,11 @@ jobs:
           HTTP_TIMEOUT: "20"
 
           # PRO filters
-          FUND_MIN: "0.0025"        # 0.25%
-          OI_MIN_PCT: "5"           # OI 15m +5%
-          VOL_SPIKE_MULT: "1.8"     # 15m vol >= 1.8x prev 15m
+          FUND_MIN: "0.0015"
+          OI_MIN_PCT: "5"
+          VOL_SPIKE_MULT: "1.8"
 
           # coins
-          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,WIFUSDT,PEPEUSDT,INJUSDT,APTUSDT,ARBUSDT"
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,XRPUSDT"
         run: |
           python liq_hunter.py
