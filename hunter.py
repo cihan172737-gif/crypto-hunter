@@ -7,23 +7,18 @@ HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "20"))
 TG_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 TG_CHAT  = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
-# Final ayarlar
-THRESH = float(os.getenv("THRESH", "0.0025"))  # 0.25% => 0.0025
+THRESH = float(os.getenv("THRESH", "0.0025"))  # 0.25%
 TOP_N = int(os.getenv("TOP_N", "5"))
 MAJOR_ONLY = os.getenv("MAJOR_ONLY", "1") == "1"
 MAJORS = {"BTC", "ETH", "SOL", "XRP", "BNB"}
 
-# Sadece Binance + Bybit
 BIG_EXCHANGES = {"BINANCE (FUTURES)", "BYBIT (FUTURES)"}
-
-# IP blok yemeyen kaynak (GitHub Actions için stabil)
 SOURCE_URL = "https://api.coingecko.com/api/v3/derivatives"
 
 def now():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def tg_send(text: str) -> None:
-    # ENV eksikse “Success ama mesaj yok” olmasın: job fail
     if not TG_TOKEN or not TG_CHAT:
         raise SystemExit(f"❌ Telegram ENV missing. TOKEN? {bool(TG_TOKEN)} CHAT? {bool(TG_CHAT)}")
 
@@ -41,7 +36,6 @@ def base_from_symbol(symbol: str) -> str:
     for sep in ["-", "_", "/"]:
         if sep in s:
             return s.split(sep)[0]
-    # BTCUSDT gibi gelenler için
     if s.startswith("BTC"): return "BTC"
     if s.startswith("ETH"): return "ETH"
     if s.startswith("SOL"): return "SOL"
@@ -50,9 +44,6 @@ def base_from_symbol(symbol: str) -> str:
     return s[:4]
 
 def main():
-    # Başlangıç ping (istersen sonra kapatırız)
-    tg_send(f"🚀 Hunter started ({now()})")
-
     try:
         r = requests.get(SOURCE_URL, timeout=HTTP_TIMEOUT)
         if r.status_code != 200:
@@ -64,7 +55,6 @@ def main():
             tg_send(f"⚠️ Unexpected source format\n\n{now()}")
             return
 
-        # Her coin için “en iyi (en yüksek) POS funding”i seçeceğiz
         best = {}  # base -> (funding_rate, market)
 
         for x in data:
@@ -72,8 +62,7 @@ def main():
             if market not in BIG_EXCHANGES:
                 continue
 
-            sym = x.get("symbol") or ""
-            base = base_from_symbol(sym)
+            base = base_from_symbol(x.get("symbol") or "")
 
             if MAJOR_ONLY and base not in MAJORS:
                 continue
@@ -86,20 +75,17 @@ def main():
             except:
                 continue
 
-            # SADECE POS funding (arbitrage kolay)
+            # POS only
             if fr <= 0:
                 continue
 
-            # Eşik
             if fr < THRESH:
                 continue
 
-            # best-per-coin seç
             prev = best.get(base)
             if (prev is None) or (fr > prev[0]):
                 best[base] = (fr, market)
 
-        # Mesaj oluştur
         if not best:
             tg_send(
                 "Funding Scan (POS only | Binance+Bybit)\n"
@@ -108,7 +94,6 @@ def main():
             )
             return
 
-        # Top N sırala
         rows = sorted(best.items(), key=lambda kv: kv[1][0], reverse=True)[:TOP_N]
 
         lines = [
@@ -119,7 +104,6 @@ def main():
         ]
 
         for base, (fr, market) in rows:
-            # CoinGecko bazen 1.00% gibi “cap” değer gösterebiliyor, şüpheli olanı işaretleyelim
             cap_note = " ⚠️(check)" if fr >= 0.0095 else ""
             lines.append(f"✅ {base} | {market.title()} | {fr*100:.2f}%{cap_note}")
 
