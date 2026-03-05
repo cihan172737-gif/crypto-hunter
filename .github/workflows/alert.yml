@@ -1,9 +1,9 @@
-name: pro-radar
+name: liquidation-hunter-pro
 
 on:
-  workflow_dispatch:
   schedule:
     - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
   run:
@@ -24,13 +24,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run PRO Radar
+      - name: Run LIQ Hunter
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HTTP_TIMEOUT: "20"
-          FUND_MIN: "0.004"          # 0.40%
-          VOL_SPIKE_PCT: "40"        # proxy: ~4% 24h hareket
+
+          # PRO filters
+          FUND_MIN: "0.0025"        # 0.25%
+          OI_MIN_PCT: "5"           # OI 15m +5%
+          VOL_SPIKE_MULT: "1.8"     # 15m vol >= 1.8x prev 15m
+
+          # coins
           SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,WIFUSDT,PEPEUSDT,INJUSDT,APTUSDT,ARBUSDT"
         run: |
-          python pro_radar.py
+          python liq_hunter.py
