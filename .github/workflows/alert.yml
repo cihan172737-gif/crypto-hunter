@@ -3,7 +3,7 @@ name: crypto-hunter-alert
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
 
 jobs:
   run:
@@ -28,7 +28,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
           HTTP_TIMEOUT: "20"
           THRESH: "0.0025"     # 0.25%
           TOP_N: "5"
