@@ -1,6 +1,8 @@
-name: Futures Hunter V4 Manual
+name: Futures Hunter V4
 
 on:
+  schedule:
+    - cron: "0 */2 * * *"
   workflow_dispatch:
 
 jobs:
