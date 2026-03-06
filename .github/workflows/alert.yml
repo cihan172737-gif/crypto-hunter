@@ -1,4 +1,4 @@
-name: Futures Hunter V4 Test
+name: Futures Hunter V4 Manual
 
 on:
   workflow_dispatch:
