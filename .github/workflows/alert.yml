@@ -1,18 +1,13 @@
-name: crypto-hunter-alert
+name: Futures Hunter V3
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"   # her 15 dk (UTC)
-
-concurrency:
-  group: crypto-hunter-alert
-  cancel-in-progress: true
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 jobs:
-  run:
+  run-hunter:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
 
     steps:
       - name: Checkout
@@ -24,47 +19,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      # 1) Secrets/Telegram test (en kritik)
-      - name: Telegram test ping
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python - << 'PY'
-          import os, requests, datetime
-          token=os.environ.get("TELEGRAM_BOT_TOKEN")
-          chat=os.environ.get("TELEGRAM_CHAT_ID")
-          if not token or not chat:
-            raise SystemExit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in GitHub Secrets.")
-          text=f"✅ TEST: crypto-hunter-alert started @ {datetime.datetime.utcnow().isoformat()}Z"
-          r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                          json={"chat_id": chat, "text": text, "disable_web_page_preview": True},
-                          timeout=20)
-          r.raise_for_status()
-          print("Telegram test sent.")
-          PY
-
-      # 2) Hunter çalıştır
       - name: Run hunter
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-          # Sadece büyük borsalar: Binance + Bybit
-          EXCHANGES: "binance,bybit"
-
-          # Sembol listesi (istersen değiştir)
-          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,XRPUSDT"
-
-          # Funding eşikleri (0.25% = 0.0025)
-          FUNDING_POS_MIN: "0.0025"
-          FUNDING_NEG_MIN: "-0.0025"
-
-          # Zaman aşımı
-          HTTP_TIMEOUT: "20"
-        run: |
-          python hunter.py
+        run: python hunter.py
