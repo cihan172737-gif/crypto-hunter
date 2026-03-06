@@ -28,27 +28,24 @@ COINS = [
 REQUEST_TIMEOUT = 15
 STATE_FILE = "state.json"
 
-# --- Scan cadence
-SCAN_INTERVAL_SEC = 30
 STARTUP_WARMUP_SEC = 45
+ALERT_COOLDOWN_SEC = 30 * 60
 
-# --- Alert controls
 MIN_TRUST_SCORE = 8
-MIN_SETUP_SCORE = 7
-ALERT_COOLDOWN_SEC = 30 * 60  # aynı coin için 30 dk
+MIN_SETUP_SCORE = 6
 
-# --- Core thresholds
-MIN_PRICE_MOVE_15M = 0.8      # %
-MIN_VOLUME_SPIKE = 1.5        # x
-MIN_OI_CHANGE_1H = 1.2        # %
-MIN_FUNDING_ABS = 0.005       # %
-MIN_LIQ_TOTAL_USD = 150_000   # son pencerede
+MIN_PRICE_MOVE_15M = 0.8
+MIN_VOLUME_SPIKE = 1.5
+MIN_OI_CHANGE_1H = 1.2
+MIN_FUNDING_ABS = 0.005
+
+MIN_LIQ_TOTAL_USD = 50_000
 MIN_LIQ_EVENTS = 2
 MIN_LIQ_DOMINANCE = 1.25
-MAX_SPREAD_BPS = 20           # bookTicker spread guard
-MIN_BOOK_IMBALANCE = 1.15     # bid/ask size ratio
 
-# --- Data sanity
+MAX_SPREAD_BPS = 20
+MIN_BOOK_IMBALANCE = 1.15
+
 MAX_REASONABLE_FUNDING_PCT = 0.20
 MAX_REASONABLE_MOVE_15M = 8.0
 MAX_REASONABLE_VOL_SPIKE = 12.0
@@ -56,10 +53,8 @@ MAX_REASONABLE_OI_CHANGE = 20.0
 MAX_PRICE_MARK_DIFF_PCT = 0.30
 FUNDING_CONFIRM_DIFF_PCT = 0.03
 
-# --- Liquidation lookback
 LIQ_LOOKBACK_SEC = 180
 
-# --- WebSocket endpoints
 BINANCE_LIQ_WS = "wss://fstream.binance.com/ws/!forceOrder@arr"
 BINANCE_BOOK_WS = "wss://fstream.binance.com/ws/!bookTicker"
 
@@ -67,7 +62,7 @@ BINANCE_BOOK_WS = "wss://fstream.binance.com/ws/!bookTicker"
 # HTTP
 # =========================================================
 session = requests.Session()
-session.headers.update({"User-Agent": "futures-hunter-v4/1.0"})
+session.headers.update({"User-Agent": "futures-hunter-v4-manual/1.0"})
 
 
 def safe_get(url: str, params=None):
@@ -120,7 +115,7 @@ def save_state(state: dict):
 # =========================================================
 # HELPERS
 # =========================================================
-def now_ts() -> float:
+def now_ts():
     return time.time()
 
 
@@ -131,7 +126,6 @@ def pct_change(old: float, new: float):
 
 
 def normalize_funding_pct(raw_decimal: float):
-    # örn 0.0001 => 0.01%
     return raw_decimal * 100.0
 
 
@@ -199,7 +193,7 @@ def get_bybit_funding(symbol: str):
 
 
 # =========================================================
-# CLOSED-CANDLE CALCS
+# CLOSED CANDLE CALCS
 # =========================================================
 def calc_closed_candle_move_15m(symbol: str):
     klines = get_binance_klines(symbol, "15m", 4)
@@ -250,8 +244,8 @@ def calc_oi_change_1h(symbol: str):
 liq_lock = threading.Lock()
 book_lock = threading.Lock()
 
-liq_events = {}   # symbol -> list[{"ts","side","usd"}]
-book_cache = {}   # symbol -> {"bid_price","bid_qty","ask_price","ask_qty","ts"}
+liq_events = {}
+book_cache = {}
 
 
 def add_liq_event(symbol: str, side: str, usd_value: float):
@@ -299,9 +293,6 @@ def get_liq_snapshot(symbol: str):
     long_events = 0
     short_events = 0
 
-    # Binance force liquidation:
-    # SELL liquidation order => long liquidation
-    # BUY liquidation order => short liquidation
     for e in events:
         if e["side"] == "SELL":
             long_liq_usd += e["usd"]
@@ -346,13 +337,10 @@ def get_liq_snapshot(symbol: str):
 def funding_quality(binance_pct, bybit_pct):
     if binance_pct is None:
         return False, "Funding missing"
-
     if abs(binance_pct) > MAX_REASONABLE_FUNDING_PCT:
         return False, "Funding outlier"
-
     if bybit_pct is None:
         return False, "Bybit confirm missing"
-
     if abs(bybit_pct) > MAX_REASONABLE_FUNDING_PCT:
         return False, "Bybit funding outlier"
 
@@ -373,7 +361,6 @@ def funding_quality(binance_pct, bybit_pct):
 def price_quality(last_price, mark_price):
     if last_price is None or mark_price is None:
         return False, "Price missing"
-
     if last_price <= 0 or mark_price <= 0:
         return False, "Invalid price"
 
@@ -387,16 +374,12 @@ def price_quality(last_price, mark_price):
 def metrics_quality(move_15m_pct, volume_spike, oi_change_pct):
     if move_15m_pct is None or volume_spike is None or oi_change_pct is None:
         return False, "Missing metrics"
-
     if abs(move_15m_pct) > MAX_REASONABLE_MOVE_15M:
         return False, "Price move outlier"
-
     if volume_spike <= 0 or volume_spike > MAX_REASONABLE_VOL_SPIKE:
         return False, "Volume spike outlier"
-
     if abs(oi_change_pct) > MAX_REASONABLE_OI_CHANGE:
         return False, "OI change outlier"
-
     return True, "Metrics sane"
 
 
@@ -597,7 +580,7 @@ def format_alert(symbol, last_price, mark_price, funding_pct, bybit_funding_pct,
     ratio_text = "N/A" if book_ratio is None else f"{book_ratio:.2f}"
 
     return (
-        f"🚨 FUTURES HUNTER V4\n\n"
+        f"🚨 FUTURES HUNTER V4 MANUAL\n\n"
         f"Coin: {symbol.replace('USDT', '')}\n"
         f"Bias: {bias}\n"
         f"Last Price: {last_price:.4f}\n"
@@ -809,7 +792,7 @@ def start_ws_background():
 
 
 # =========================================================
-# MAIN LOOP
+# MAIN
 # =========================================================
 def main():
     state = load_state()
@@ -820,37 +803,39 @@ def main():
     print(f"Warming up streams for {STARTUP_WARMUP_SEC}s...")
     time.sleep(STARTUP_WARMUP_SEC)
 
-    send_telegram(f"✅ Futures Hunter V4 started @ {datetime.now(timezone.utc).isoformat()}")
+    now_utc = datetime.now(timezone.utc).isoformat()
+    send_telegram(f"✅ Futures Hunter V4 Manual started @ {now_utc}")
 
-    while True:
-        try:
-            for symbol in COINS:
-                try:
-                    msg, key = analyze_symbol(symbol)
-                    if msg and key:
-                        last_ts = float(last_alert_times.get(key, 0))
-                        if now_ts() - last_ts >= ALERT_COOLDOWN_SEC:
-                            send_telegram(msg)
-                            last_alert_times[key] = now_ts()
-                        else:
-                            print(f"Cooldown skip: {key}")
-                except Exception as e:
-                    print(f"Analyze error {symbol}: {e}")
+    found = False
 
-                time.sleep(0.3)
+    try:
+        for symbol in COINS:
+            try:
+                msg, key = analyze_symbol(symbol)
+                if msg and key:
+                    last_ts = float(last_alert_times.get(key, 0))
+                    if now_ts() - last_ts >= ALERT_COOLDOWN_SEC:
+                        send_telegram(msg)
+                        last_alert_times[key] = now_ts()
+                        found = True
+                    else:
+                        print(f"Cooldown skip: {key}")
+            except Exception as e:
+                print(f"Analyze error {symbol}: {e}")
 
-            state["last_alert_times"] = last_alert_times
-            state["updated_at"] = datetime.now(timezone.utc).isoformat()
-            save_state(state)
+            time.sleep(0.3)
 
-            time.sleep(SCAN_INTERVAL_SEC)
+        if not found:
+            send_telegram("ℹ️ Futures Hunter V4 Manual: güçlü setup bulunamadı.")
 
-        except KeyboardInterrupt:
-            print("Stopped by user.")
-            break
-        except Exception as e:
-            print("Main loop error:", e)
-            time.sleep(5)
+        state["last_alert_times"] = last_alert_times
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_state(state)
+
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+    except Exception as e:
+        print("Main loop error:", e)
 
 
 if __name__ == "__main__":
