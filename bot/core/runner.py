@@ -26,6 +26,10 @@ def btc_guard_ok(config: dict, client: BinanceClient) -> bool:
 
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
+
+    if prev == 0:
+        return True
+
     change_pct = ((last - prev) / prev) * 100.0
 
     if change_pct <= float(guard.get("max_dump_pct", -0.9)):
