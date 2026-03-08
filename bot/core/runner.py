@@ -1,16 +1,18 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from bot.exchange.binance_client import BinanceFuturesClient
+from bot.exchange.binance_client import BinanceClient
 from bot.strategies.hunter_v6 import HunterV6Strategy
 from bot.utils.state import load_state, save_state
 from bot.utils.telegram import send_telegram
+
 
 def _minutes_since_iso(iso_str: str) -> float:
     dt = datetime.fromisoformat(iso_str)
     now = datetime.now(timezone.utc)
     return (now - dt).total_seconds() / 60.0
 
-def btc_guard_ok(config: dict, client: BinanceFuturesClient) -> bool:
+
+def btc_guard_ok(config: dict, client: BinanceClient) -> bool:
     guard = config.get("btc_guard", {})
     if not guard.get("enabled", False):
         return True
@@ -18,6 +20,7 @@ def btc_guard_ok(config: dict, client: BinanceFuturesClient) -> bool:
     symbol = guard.get("symbol", "BTCUSDT")
     tf = guard.get("tf", "5m")
     df = client.get_klines(symbol, tf, 30)
+
     if df.empty or len(df) < 3:
         return True
 
@@ -30,6 +33,7 @@ def btc_guard_ok(config: dict, client: BinanceFuturesClient) -> bool:
         return False
 
     return True
+
 
 def format_signal_message(sig) -> str:
     emoji = "🟢" if sig.direction == "LONG" else "🔴"
@@ -45,6 +49,7 @@ def format_signal_message(sig) -> str:
         f"<b>Reason:</b> {sig.reason}"
     )
 
+
 def run_once(config: dict) -> None:
     state = load_state()
 
@@ -53,7 +58,7 @@ def run_once(config: dict) -> None:
         print("[runner] günlük sinyal limiti doldu")
         return
 
-    client = BinanceFuturesClient()
+    client = BinanceClient()
 
     if not btc_guard_ok(config, client):
         return
