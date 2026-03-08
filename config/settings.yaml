@@ -1,1 +1,49 @@
+runtime:
+  once: true
+  loop_seconds: 300
 
+telegram:
+  enabled: true
+
+strategy:
+  name: hunter_v6
+  daily_max_signals: 3
+  cooldown_minutes: 90
+  min_score: 7.0
+
+symbols:
+  - SOLUSDT
+  - LINKUSDT
+  - DOGEUSDT
+  - ARBUSDT
+
+btc_guard:
+  enabled: true
+  symbol: BTCUSDT
+  tf: 5m
+  max_dump_pct: -0.9
+  ema_fast: 9
+  ema_slow: 21
+
+timeframes:
+  entry: 5m
+  confirm: 15m
+  trend: 1h
+
+filters:
+  ema_fast: 9
+  ema_slow: 21
+  ema_trend: 50
+  rsi_period: 14
+  rsi_long_min: 48
+  rsi_short_max: 52
+  min_volume_ratio: 1.25
+  min_atr_pct: 0.35
+  max_funding_abs: 0.03
+  min_oi_change_pct: 0.10
+  min_taker_imbalance_pct: 2.0
+
+risk:
+  atr_sl_mult: 1.2
+  atr_tp1_mult: 1.8
+  atr_tp2_mult: 3.0
